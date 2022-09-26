@@ -1,0 +1,1093 @@
+<!--
+The GPLv3 License (GPLv3)
+
+Copyright (c) 2022 Kaffee
+
+Coffeetyper is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Coffeetyper is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Coffeetyper.  If not, see <http://www.gnu.org/licenses/>.
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<title>Coffeetyper</title>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="description" content="A lightweight, minimalist and ultra customizable open source typing test." />
+	<meta name="keywords" content="Typing, Test, WPM, Speed" />
+	<meta name="author" content="https://github.com/0ql" />
+	<meta name="theme-color" content="#372700">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<link rel="apple-touch-icon" href="./assets/icons/apple-icon-180.png">
+	<link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+	<link rel="icon" href="./assets/favicon.png" type="image/png" sizes="any">
+	<link rel="stylesheet" href="" id="google-fonts" crossorigin>
+	<link rel="stylesheet" href="/themes/bliss.css" id="theme" crossorigin>
+	<link rel="manifest" href="./assets/manifest.webmanifest">
+	<script type="module">
+		const
+			convertRemToPixels = (rem) => rem * parseFloat(getComputedStyle(document.documentElement).fontSize),
+			defaults = {
+				len: 40,
+				info: {
+					chars: 0,
+				},
+				margins: {
+					left: convertRemToPixels(10),
+					right: convertRemToPixels(10),
+					top: convertRemToPixels(10),
+					bottom: convertRemToPixels(10),
+				},
+				generation: {
+					firstCharUpper: false,
+					randomUpper: false,
+					allUpper: false
+				},
+				keybindings: {
+					leader: "Tab",
+					reset: "r"
+				},
+				roundedCursor: true,
+				toggleds: false,
+				toggledLines: false,
+				toggledRoundedCaret: true,
+				timems: 0,
+				letterSpacing: 0,
+				lineHeight: 0,
+				textAlign: "justify",
+				fontFamily: "system-ui",
+				usingLocalFonts: true, // try to use local fonts by default
+				timeMode: "timed",
+				testlen: 30, // in sec
+				lang: "en",
+				theme: "bliss"
+			},
+			$ = document.querySelector.bind(document),
+			l = (el, ev, callBack) => $(el).addEventListener(ev, callBack),
+			w = (ev, callBack) => window.addEventListener(ev, callBack),
+			main = $("main"),
+			cursor = $(".cursor"),
+			doc = document.documentElement.style,
+			infobar = $(".infobar"),
+			wrapper = $(".wrapper"),
+			fontlink = $("#google-fonts"),
+			themelink = $("#theme")
+
+		let
+			str = "",
+			index = 0,
+			cnt = 0,
+			state = "idle", // true => test ongoing
+			registration = null,
+			s = {
+				...defaults,
+				...JSON.parse(localStorage.getItem("s"))
+			},
+			stats = {
+				tests: [],
+				...JSON.parse(localStorage.getItem("stats"))
+			}
+
+		themelink.href = `./themes/${s.theme}.css`
+
+		const registerServiceWorker = async _ => {
+			if ("serviceWorker" in navigator) {
+				try {
+					registration = await navigator.serviceWorker.register("./serviceworker.js", {
+						scope: "./",
+					});
+					if (registration.installing) {
+						console.log("Service worker installing");
+						localStorage.setItem("cacheCreated", Date.now())
+					} else if (registration.waiting) {
+						console.log("Service worker installed");
+					} else if (registration.active) {
+						console.log("Service worker active");
+						if (parseInt(localStorage.getItem("cacheCreated")) + 1000 * 60 * 60 * 24 * 2 < Date.now()) {
+							console.log("Cache older than two days...")
+							if (window.navigator.onLine) {
+								registration.active.postMessage({type: "updateCache"})
+							} else console.log("Skipping cache refresh as the user is offline.")
+						}
+					}
+					navigator.serviceWorker.addEventListener("message", (e) => {
+						// TODO: switch case
+						if (e.data === "updateSuccess") {
+							console.log("Successfully updated cache!")
+							localStorage.setItem("cacheCreated", Date.now())
+						}
+						else if (e.data === "cacheThemeSuccess") console.log("Successfully cached theme")
+						else if (e.data === "cacheThemeFail") console.error("Failed to cache theme")
+						else if (e.data === "updateFail") console.error('Failed to update the cache.')
+					})
+				} catch (error) {
+					console.error(`Registration failed with ${error}`);
+				}
+			}
+		};
+
+		const syncProperties = _ => {
+			doc.setProperty("--left-margin", `${s.margins.left}px`)
+			doc.setProperty("--right-margin", `${s.margins.right}px`)
+			doc.setProperty("--top-margin", `${s.margins.top}px`)
+			doc.setProperty("--bottom-margin", `${s.margins.bottom}px`)
+
+			doc.setProperty("--letter-spacing", s.letterSpacing === 0 ? `auto` : `${s.letterSpacing}rem`)
+			doc.setProperty("--line-height", s.lineHeight === 0 ? `auto` : `${s.lineHeight}rem`)
+			doc.setProperty("--text-align", s.textAlign)
+			doc.setProperty("--font-family", `"${s.fontFamily}"`)
+			$(".letter-spacing").value = s.letterSpacing
+			$(".line-height").value = s.lineHeight
+			$(".text-align").value = s.textAlign
+			$(".fonts").value = s.fontFamily
+			$(".lang").value = s.lang
+			$(".testlen").value = s.testlen
+			$(".allupper").checked = s.generation.allUpper
+			$(".firstupper").checked = s.generation.firstCharUpper
+			$(".randupper").checked = s.generation.randomUpper
+			$(".time-mode").value = s.timeMode
+			$(".leader").value = s.keybindings.leader
+			$(".reset").value = s.keybindings.reset
+		}
+		syncProperties()
+
+		const tryFetchLang = async (url) => {
+			const res = await fetch(url)
+			if (res.ok) return res
+			return null
+		}
+
+		const getLang = async _ => (await (await tryFetchLang(`./lang/${s.lang}.txt`) ?? await fetch(`./lang/en.txt`)).text()).replace(/\n/g, " \n").split("\n")
+
+		const generateText = async (customWordlist = null) => {
+			str = ""
+			let wordlist = customWordlist?.replace(/\n/g, " \n").split("\n") ?? await getLang()
+			if (s.generation.firstCharUpper) wordlist = wordlist.map((w) => {
+				if (!w) return
+				w = w[0].toUpperCase() + w.substring(1, w.length)
+				return w
+			})
+			for (let i = 0; i < s.len; i++) str += wordlist[Math.floor(Math.random() * wordlist.length)]
+			if (s.generation.allUpper) str = str.toUpperCase()
+			if (s.generation.randomUpper) str = str.split("").map((c, i) => {
+				if (Math.random() < 0.35) c = c.toUpperCase()
+				return c
+			}).join("")
+			s.str = str
+			return str
+		}
+
+		const render = (letters) => {
+			let cnt = 0
+			str = ""
+			letters.split("").forEach((letter) => {
+				switch (letter) {
+					case " ":
+						str += `<span data-char="${letter}" class="space">${letter}</span>`
+						break
+					case "	":
+						str += `<span data-char="Tab" class="tab icon:tab">${letter}</span>`
+						break
+					case "\n":
+						str += `<span data-char="Enter"><span class="break icon:line-break"></span><br></span>`
+						break
+					default:
+						str += `<span data-char="${letter}">${letter}</span>`
+				}
+				cnt++
+			})
+			s.info.chars = cnt
+			main.innerHTML = str
+		}
+
+		const setCursor = _ => {
+			if (state === "end") return
+			if (main.children[index].offsetTop > cursor.offsetTop) {
+				wrapper.scrollTo(0, cursor.offsetTop)
+			}
+			cursor.style.inset = `${main.children[index]?.offsetTop}px auto auto ${main.children[index]?.offsetLeft}px`;
+		}
+
+		const countCorrect = _ => {
+			let words = 0, letters = 0, correctWord = true
+			for (let char of main.children) {
+				if (char.textContent === " ") {
+					if (correctWord) words++
+					else correctWord = true
+				}
+				if (char.dataset) {
+					if (char.dataset.correct === "true") letters++
+					else correctWord = false
+				}
+			}
+			return {words, letters}
+		}
+
+		const line = (pointA, pointB) => {
+			const lengthX = pointB[0] - pointA[0]
+			const lengthY = pointB[1] - pointA[1]
+			return {
+				length: Math.hypot(lengthX, lengthY),
+				angle: Math.atan2(lengthY, lengthX)
+			}
+		}
+
+		const controlPoint = (current, previous, next, reverse) => {
+			const p = previous || current
+			const n = next || current
+			const o = line(p, n)
+			const angle = o.angle + (reverse ? Math.PI : 0)
+			// TODO: customize smoothing
+			const length = o.length * 0.2
+			const x = current[0] + Math.cos(angle) * length
+			const y = current[1] + Math.sin(angle) * length
+			return [x, y]
+		}
+
+		const bezierCommand = (point, i, a) => {
+			const [cpsX, cpsY] = controlPoint(a[i - 1], a[i - 2], point)
+			const [cpeX, cpeY] = controlPoint(point, a[i - 1], a[i + 1], true)
+			return `C ${cpsX},${cpsY} ${cpeX},${cpeY} ${point[0]},${point[1]}`
+		}
+
+		const svgPath = (points, command, color, strokeWidth) => {
+			const d = points.reduce((acc, point, i, a) => i === 0
+				? `M ${point[0]},${point[1]}`
+				: `${acc} ${command(point, i, a)}`
+				, '')
+			return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" />`
+		}
+
+		const end = _ => {
+			const {words, letters} = countCorrect()
+			state = "end"
+			cursor.style.display = "none"
+			const res = {
+				realWPM: Math.round(words / (s.timems / 1000 / 60) * 100) / 100,
+				adWPM: Math.round((letters / 5) / (s.timems / 1000 / 60) * 100) / 100,
+				LPM: Math.round(letters / (s.timems / 1000 / 60) * 100) / 100,
+				time: Date.now()
+			}
+			// TODO: Conditions for invalid test
+			stats.tests.push(res)
+			let
+				adav = 0,
+				rav = 0,
+				xInterval = Math.floor(1000 / stats.tests.length), admd, rmd
+
+			stats.tests.sort((a, b) => a.adWPM - b.adWPM)
+			admd = (stats.tests[Math.floor(stats.tests.length / 2)].adWPM).toFixed(2)
+			stats.tests.sort((a, b) => a.realWPM - b.realWPM)
+			rmd = (stats.tests[Math.floor(stats.tests.length / 2)].realWPM).toFixed(2)
+			stats.tests.sort((a, b) => a.time - b.time)
+			let adarr = stats.tests.map((tst, i) => {
+				adav += tst.adWPM
+				return [xInterval * i, 200 - Math.floor(tst.adWPM)]
+			})
+			adav = (adav / stats.tests.length).toFixed(2)
+
+			let rarr = stats.tests.map((tst, i) => {
+				rav += tst.realWPM
+				return [xInterval * i, 200 - Math.floor(tst.realWPM)]
+			})
+			rav = (rav / stats.tests.length).toFixed(2)
+
+			main.innerHTML = `
+				<div style="color: var(--main-color)">
+					<h1 title="LPM / 5">Adjusted WPM: ${res.adWPM}</h1>
+					<h2>All time Average: ${adav}</h2>
+					<h2>All time Median: ${admd}</h2>
+				</div>
+				<div style="color: var(--sub-color)">
+					<h1 title="Correct words per Minute without adjusting for sample randomness">Real WPM: ${res.realWPM}</h1>
+					<h2>All time Average: ${rav}</h2>
+					<h2>All time Median: ${rmd}</h2>
+				</div>
+				<h1 title="Correct letters per Minute">LPM: ${res.LPM}</h1>
+				<h2>${s.keybindings.leader} + ${s.keybindings.reset} to restart</h2>
+				<h1>WPM over time</h1>
+				<svg width="100%" height="100%" viewBox="-20 -20 1020 250" xmlns="http://www.w3.org/2000/svg">
+					<text x="0" y="-5" fill="currentColor" font-size="1rem">200</text>
+					<text x="0" y="45" fill="currentColor" font-size="1rem">150</text>
+					<text x="0" y="95" fill="currentColor" font-size="1rem">100</text>
+					<text x="0" y="145" fill="currentColor" font-size="1rem">50</text>
+					<text x="0" y="195" fill="currentColor" font-size="1rem">0</text>
+					<path d="M 0 0 L 1000 0" fill="none" stroke="currentColor" stroke-dasharray="4"/>
+					<path d="M 0 50 L 1000 50" fill="none" stroke="currentColor" stroke-dasharray="4"/>
+					<path d="M 0 100 L 1000 100" fill="none" stroke="currentColor" stroke-dasharray="4"/>
+					<path d="M 0 150 L 1000 150" fill="none" stroke="currentColor" stroke-dasharray="4"/>
+					<path d="M 0 200 L 1000 200" fill="none" stroke="currentColor" stroke-dasharray="4"/>
+					${svgPath(rarr, bezierCommand, "var(--sub-color)", "3")}
+					${svgPath(adarr, bezierCommand, "var(--main-color)", "4")}
+				</svg>
+			`
+			s.timems = 0
+			infobar.innerHTML = ``
+			infobar.style.display = "hidden"
+		}
+
+		const reset = async (customWordlist, text) => {
+			s.timems = 0
+			state = "idle"
+			index = 0
+			cursor.style.display = "block"
+			infobar.innerHTML = `
+				<span class="time"></span>
+				<span class="livewpm"></span>
+				<span class="livelpm"></span>
+			`
+			render(text ?? await generateText(customWordlist))
+			setCursor()
+		}
+
+		let downleft, downright, downtop, downbottom = false
+		l(".left", "pointerdown", _ => downleft = true)
+		l(".right", "pointerdown", _ => downright = true)
+		l(".top", "pointerdown", _ => downtop = true)
+		l(".bottom", "pointerdown", _ => downbottom = true)
+		w("pointerup", _ => downleft = downright = downtop = downbottom = false)
+		w("pointermove", _ => {
+			if (downleft) {
+				s.margins.left = e.clientX
+				doc.setProperty("--left-margin", s.margins.left + "px")
+				setCursor()
+			} else if (downright) {
+				s.margins.right = window.innerWidth - e.clientX
+				doc.setProperty("--right-margin", s.margins.right + "px")
+				setCursor()
+			} else if (downtop) {
+				s.margins.top = e.clientY
+				doc.setProperty("--top-margin", s.margins.top + "px")
+				setCursor()
+			} else if (downbottom) {
+				s.margins.bottom = window.innerHeight - e.clientY
+				doc.setProperty("--bottom-margin", s.margins.bottom + "px")
+				setCursor()
+			}
+		})
+		l(".s", "click", async _ => {
+			let res, str = ""
+			if (s.usingLocalFonts) {
+				res = await window.queryLocalFonts()
+				res.forEach((font) => {
+					if (font.style !== "Regular") return;
+					str += `<option style="font-family: '${font.family}';" value="${font.family}">${font.family}</option>`
+				})
+				s.usingLocalFonts = true
+				$(".fonts").innerHTML = str
+				$(".fontset").value = "installed"
+			} else {
+				res = await (await fetch("./fonts.json")).json()
+				res.forEach((font) => {
+					str += `<option value="${font}">${font}</option>`
+				})
+				s.usingLocalFonts = false
+				$(".fonts").innerHTML = str
+				$(".fontset").value = "google"
+			}
+			$(".words").value = s.len
+			$(".fonts").value = s.fontFamily
+			$(".toggle-s").hidden = s.toggleds
+			$(".icons").hidden = !s.toggleds
+			s.toggleds = !s.toggleds
+		})
+		l(".words", "input", _ => {
+			s.len = e.target.value
+			render(generateText())
+		})
+		l(".close-s", "click", _ => {
+			$(".toggle-s").hidden = s.toggleds
+			$(".icons").hidden = !s.toggleds
+			s.toggleds = !s.toggleds
+		})
+		l(".lines", "click", _ => {
+			$(".toggle-lines").hidden = s.toggledLines
+			$(".icons").hidden = !s.toggledLines
+			s.toggledLines = !s.toggledLines
+		})
+		l(".close-lines", "click", _ => {
+			$(".toggle-lines").hidden = s.toggledLines
+			$(".icons").hidden = !s.toggledLines
+			s.toggledLines = !s.toggledLines
+		})
+		l(".rounded", "pointerdown", _ => {
+			s.toggledRoundedCaret = !s.toggledRoundedCaret
+			if (s.toggledRoundedCaret) cursor.style.borderRadius = "var(--cursor-border-radius)"
+			else cursor.style.borderRadius = "0px"
+		})
+		const ratt = i => main.children[i].removeAttribute("data-correct")
+		let toggledLeader = false
+		w("keydown", async e => {
+			if (e.key === s.keybindings.leader) {
+				e.preventDefault()
+				toggledLeader = !toggledLeader
+				return
+			} else if (toggledLeader) {
+				if (e.key === s.keybindings.reset) {
+					reset()
+				}
+				toggledLeader = false
+				return
+			}
+			if (state === "end" || e.key === "Control" || e.key === "Shift") return
+			if (state === "idle") state = "running"
+			if (e.ctrlKey && e.key === "Backspace") {
+				ratt(index - 1)
+				if (main.children[index - 1].dataset.char === " ") ratt(index - 1)
+				if (index === 1) index = 0
+				for (let i = index - 2; i >= 0; i--) {
+					if (main.children[i].dataset.char === " ") {
+						index = i + 1
+						break
+					} else if (i <= 1) {
+						ratt(0); ratt(1)
+						index = 0
+						break
+					}
+					ratt(i)
+				}
+			} else if (e.key === "Backspace") {
+				if (index > 0) index--
+				ratt(index)
+			} else {
+				if (e.key === " " || e.key === "Enter" || e.key === "Tab") e.preventDefault()
+				main.children[index].dataset.correct = main.children[index].dataset.char === e.key
+				index++
+				if (index === s.info.chars) end()
+			}
+			setCursor()
+		})
+		l(".letter-spacing", "input", e => {
+			s.letterSpacing = e.target.value
+			doc.setProperty("--letter-spacing", `${s.letterSpacing}rem`)
+		})
+		l(".line-height", "input", e => {
+			s.lineHeight = e.target.value
+			doc.setProperty("--line-height", `${s.lineHeight}rem`)
+		})
+		l(".text-align", "change", e => {
+			s.textAlign = e.target.value
+			doc.setProperty("--text-align", s.textAlign)
+		})
+		l(".resets", "pointerdown", _ => {
+			s = defaults
+			syncProperties()
+		})
+		l(".fonts", "change", e => {
+			s.fontFamily = e.target.value
+			doc.setProperty("--font-family", `"${s.fontFamily}"`)
+			if (s.usingLocalFonts) return
+			fontlink.href = `https://fonts.googleapis.com/css2?family=${s.fontFamily}&display=swap`
+		})
+		l(".fontset", "change", async e => {
+			// TODO: fix this mess
+			let str = "", res
+			if (e.target.value === "installed" && (await navigator.permissions.query({name: "local-fonts"})).state !== "granted") {
+				alert("You must give Coffeetyper the permission to query your installed fonts in order to use them.")
+				$(".fontset").value = "google"
+			} else if (e.target.value === "installed") {
+				res = await window.queryLocalFonts()
+				res.forEach((font) => {
+					if (font.style !== "Regular") return;
+					str += `<option style="font-family: '${font.family}';" value="${font.family}">${font.family}</option>`
+				})
+				s.usingLocalFonts = true
+				$(".fonts").innerHTML = str
+			} else {
+				res = await (await fetch("./fonts.json")).json()
+				res.forEach((font) => {
+					str += `<option value="${font}">${font}</option>`
+				})
+				s.usingLocalFonts = false
+				$(".fonts").innerHTML = str
+			}
+		})
+		l(".lang", "input", async e => {
+			s.lang = e.target.value
+			document.documentElement.lang = e.target.value
+			render(await generateText())
+		})
+		l(".file", "input", async ({target: {files: [file]}}) => reset(null, await file?.text()))
+		l(".wordlist", "input", async ({target: {files: [file]}}) => reset(await file?.text()))
+		l(".time-mode", "input", e => s.timeMode = e.target.value)
+		l(".testlen", "input", e => s.testlen = e.target.value)
+		l(".allupper", "pointerdown", _ => s.generation.allUpper = !s.generation.allUpper)
+		l(".firstupper", "pointerdown", _ => s.generation.firstCharUpper = !s.generation.firstCharUpper)
+		l(".randupper", "pointerdown", _ => s.generation.randomUpper = !s.generation.randomUpper)
+		w("resize", setCursor)
+		w("beforeunload", _ => {
+			localStorage.setItem("s", JSON.stringify(s))
+			localStorage.setItem("stats", JSON.stringify(stats))
+		})
+		l(".themes-container", "mouseenter", async e => {
+			str = ""
+			const res = (await (await fetch("./themes/_list.json")).json()).forEach(theme => {
+				str += `<button class="btn" style="color: ${theme.mainColor}; background: ${theme.bgColor};">${theme.name}</button>`
+			})
+			e.target.innerHTML = str
+		})
+		l(".themes-container", "mouseleave", e => {
+			e.target.innerHTML = ""
+		})
+		l(".themes-container", "click", e => {
+			if (e.target.nodeName === "BUTTON") {
+				themelink.href = `./themes/${e.target.innerHTML}.css`
+				s.theme = e.target.innerHTML
+				registration?.active.postMessage({type: "cacheTheme", url: `./themes/${e.target.innerHTML}.css`})
+			}
+		})
+
+		setInterval(_ => {
+			if (state === "running") {
+				s.timems += 1000
+				// TODO: live WPM and LPM
+				if (s.timeMode === "countdown" && Math.floor(s.testlen - s.timems / 1000) <= 0) {
+					state = "end"
+					end()
+					return
+				}
+				$(".time").textContent = `${s.timeMode === "timed" ? Math.floor(s.timems / 1000) : Math.floor(s.testlen - s.timems / 1000)}`
+			}
+		}, 1000)
+		if (!s.usingLocalFonts) fontlink.href = `https://fonts.googleapis.com/css2?family=${s.fontFamily}&display=swap`
+
+		reset()
+
+		registerServiceWorker();
+	</script>
+
+	<style>
+		:root {
+			--left-margin: 10rem;
+			--right-margin: 10rem;
+			--top-margin: 10rem;
+			--bottom-margin: 10rem;
+			--lines-width: 0.1rem;
+			--letter-spacing: auto;
+			--line-height: auto;
+			--text-align: justify;
+
+			--font-family: system-ui, sans-serif;
+			--font-size: 3rem;
+			--cursor-transition-speed: 100ms;
+			--cursor-width: 4px;
+			--cursor-border-radius: 1000px;
+			--icon-size: 3rem;
+			--icon-cog: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="black"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>');
+			--icon-frame: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 17h16M7 4v16M17 4v16"/></svg>');
+			--icon-x-circle: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="black"><path stroke-linecap="round" stroke-linejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>');
+			--icon-line-break: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><path fill="currentColor" d="M18 6v6H7.83l2.58-2.59L9 8l-5 5l5 5l1.41-1.41L7.83 14H20V6h-2Z"/></svg>');
+			--icon-tab: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><path fill="currentColor" d="M12.3 17.3q-.275-.275-.275-.7q0-.425.275-.7l2.9-2.9H3q-.425 0-.712-.288Q2 12.425 2 12t.288-.713Q2.575 11 3 11h12.2l-2.9-2.9q-.275-.275-.275-.7q0-.425.275-.7q.275-.275.7-.275q.425 0 .7.275l4.6 4.6q.15.15.212.325q.063.175.063.375t-.063.375q-.062.175-.212.325l-4.6 4.6q-.275.275-.7.275q-.425 0-.7-.275Zm8.7.7q-.425 0-.712-.288Q20 17.425 20 17V7q0-.425.288-.713Q20.575 6 21 6t.712.287Q22 6.575 22 7v10q0 .425-.288.712Q21.425 18 21 18Z"/></svg>');
+		}
+
+		h1 {
+			font-size: 3rem;
+		}
+
+		h2 {
+			font-size: 2rem;
+		}
+
+		h3 {
+			font-size: 1rem;
+		}
+
+		button {
+			background: transparent;
+			border: none;
+			cursor: pointer;
+		}
+
+		.fileupload-btn {
+			background-color: var(--sub-alt-color);
+			cursor: pointer;
+			border-radius: 1rem;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 1.3rem;
+			padding: 1rem;
+			box-sizing: border-box;
+		}
+
+		.grid {
+			display: grid;
+		}
+
+		.col-span-2 {
+			grid-column: span 2 / span 2;
+		}
+
+		.col-span-3 {
+			grid-column: span 3 / span 3;
+		}
+
+		.col-span-4 {
+			grid-column: span 4 / span 4;
+		}
+
+		.col-span-full {
+			grid-column: 1 / -1;
+		}
+
+		.btn {
+			background-color: var(--sub-alt-color);
+			color: currentColor;
+			font-size: 1.3rem;
+			padding: 1rem;
+			border-radius: 1rem;
+			width: 100%;
+		}
+
+		.inp {
+			background-color: var(--sub-alt-color);
+			color: currentColor;
+			font-size: 1.3rem;
+			padding: 1rem;
+			border-radius: 1rem;
+			border: none;
+			width: 100%;
+		}
+
+		input,
+		select,
+		label {
+			box-sizing: border-box;
+		}
+
+		input[type="checkbox"] {
+			cursor: pointer;
+		}
+
+		body {
+			box-sizing: border-box;
+			margin: 0;
+			background-color: var(--bg-color);
+			color: var(--text-color);
+			width: 100vw;
+			height: 100vh;
+			overflow: hidden;
+			font-family: var(--font-family);
+		}
+
+		.cursor {
+			top: 0;
+			border-radius: var(--cursor-border-radius);
+			transition: inset var(--cursor-transition-speed) linear;
+			position: absolute;
+			background-color: var(--caret-color);
+			width: var(--cursor-width);
+			height: calc(var(--font-size) + 0.5rem);
+		}
+
+		.infobar {
+			position: fixed;
+			top: calc(var(--top-margin) - 3rem);
+			left: var(--left-margin);
+		}
+
+		.left,
+		.right {
+			position: fixed;
+			width: var(--lines-width);
+			top: 0;
+			height: 100vh;
+			border: var(--lines-width) dashed var(--caret-color);
+			cursor: col-resize;
+			padding: 0;
+		}
+
+		.top,
+		.bottom {
+			position: fixed;
+			width: 100vw;
+			height: var(--lines-width);
+			border: var(--lines-width) dashed var(--caret-color);
+			cursor: row-resize;
+		}
+
+		.top {
+			top: var(--top-margin)
+		}
+
+		.bottom {
+			bottom: var(--bottom-margin);
+		}
+
+		.left {
+			left: calc(var(--left-margin) - var(--lines-width));
+		}
+
+		.right {
+			right: var(--right-margin);
+		}
+
+		.close-lines {
+			padding: 1rem;
+			position: absolute;
+			top: 0;
+			left: 0;
+		}
+
+		select {
+			background-color: var(--sub-alt-color);
+			color: var(--text-color);
+			font-size: 1.3rem;
+			padding: 1rem;
+			border-radius: 1rem;
+			cursor: pointer;
+			width: 100%;
+			border: none;
+		}
+
+		:where([class^="icon:"], [class*=" icon:"])::before {
+			content: "";
+			display: var(--icon-display, block);
+			inline-size: var(--icon-size, 1em);
+			aspect-ratio: 1;
+			background-color: currentColor;
+			-webkit-mask-repeat: no-repeat;
+			mask-repeat: no-repeat;
+			-webkit-mask-position: center;
+			mask-position: center;
+			-webkit-mask-size: contain;
+			mask-size: contain;
+			-webkit-mask-image: var(--icon);
+			mask-image: var(--icon);
+			color: var(--text-color);
+		}
+
+		.icon\:x-circle {
+			--icon: var(--icon-x-circle);
+		}
+
+		.icon\:cog {
+			--icon: var(--icon-cog);
+		}
+
+		.icon\:frame {
+			--icon: var(--icon-frame);
+		}
+
+		.icon\:line-break {
+			--icon: var(--icon-line-break);
+		}
+
+		.icon\:tab {
+			--icon: var(--icon-tab);
+		}
+
+		.icons {
+			padding: 1rem;
+			position: fixed;
+			top: 0;
+			left: 0;
+			z-index: 2;
+		}
+
+		@keyframes slide {
+			from {
+				left: -40vw;
+			}
+
+			to {
+				left: 0;
+			}
+		}
+
+		.toggle-s {
+			top: 0;
+			position: fixed;
+			backdrop-filter: blur(5px);
+			height: 100vh;
+			max-width: 100vw;
+			animation: ease-out slide 100ms forwards;
+			overflow-y: scroll;
+			direction: rtl;
+		}
+
+		.toggle-s::-webkit-scrollbar {
+			width: 0.5rem;
+			cursor: pointer;
+		}
+
+		.toggle-s::-webkit-scrollbar-thumb {
+			background: var(--main-color);
+			border-radius: 1000px;
+		}
+
+		.toggle-s::-webkit-scrollbar-track {
+			background: transparent;
+		}
+
+		.toggle-c {
+			top: 0;
+			right: 0;
+			max-width: 100vw;
+			height: 100vh;
+			backdrop-filter: blur(5px);
+		}
+
+		.pannel {
+			direction: ltr;
+			display: grid;
+			gap: 0.5rem;
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+			grid-row: auto;
+			margin: 1rem;
+		}
+
+		main {
+			width: 100%;
+			position: absolute;
+			top: 0;
+			font-size: var(--font-size);
+			text-align: var(--text-align);
+			overflow-wrap: break-word;
+			letter-spacing: var(--letter-spacing);
+			line-height: var(--line-height);
+		}
+
+		main>span {
+			user-select: none;
+		}
+
+		.wrapper {
+			scroll-behavior: smooth;
+			margin-block-start: var(--top-margin);
+			margin-inline: var(--left-margin) var(--right-margin);
+			overflow-y: scroll;
+			scrollbar-width: none;
+			height: calc(100vh - var(--top-margin) - var(--bottom-margin));
+			position: relative;
+		}
+
+		.wrapper::-webkit-scrollbar {
+			display: none;
+		}
+
+		span {
+			color: var(--sub-color);
+		}
+
+		span[data-correct="true"]>span::before,
+		span[data-correct="true"]::before,
+		span[data-correct="true"] {
+			color: var(--text-color);
+		}
+
+		span[data-correct="false"]>span::before,
+		span[data-correct="false"]::before,
+		span[data-correct="false"] {
+			color: var(--error-color);
+		}
+
+		span[data-correct="false"].space {
+			text-decoration: underline;
+		}
+
+		span.tab {
+			color: currentColor;
+			width: 3rem;
+			height: 100%;
+			display: inline-block;
+		}
+
+		span.break {
+			color: currentColor;
+			display: inline-block;
+		}
+
+		label {
+			font-size: 0.8rem;
+			user-select: none;
+			padding: 0.3rem;
+		}
+
+		.center {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+		}
+
+		.themes-container {
+			width: 40vw;
+			height: 100vh;
+			overflow-y: scroll;
+			position: fixed;
+			top: 0;
+			right: 0;
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem;
+			padding: 0.5rem;
+		}
+
+		.themes-container::-webkit-scrollbar {
+			width: 0.5rem;
+			cursor: pointer;
+		}
+
+		.themes-container::-webkit-scrollbar-thumb {
+			background: var(--main-color);
+			border-radius: 1000px;
+		}
+
+		.themes-container::-webkit-scrollbar-track {
+			background: transparent;
+		}
+	</style>
+</head>
+
+<body>
+	<header class="infobar">
+		<span class="time"></span>
+		<span class="livewpm"></span>
+		<span class="livelpm"></span>
+	</header>
+	<section class="wrapper">
+		<main>
+		</main>
+		<div class="cursor"></div>
+	</section>
+	<section hidden class="toggle-s">
+		<div class="pannel">
+			<button class="close-s icon:x-circle col-span-full"></button>
+			<h1 class="col-span-full">Settings</h1>
+			<label class="col-span-3">
+				Choose Font
+				<select class="fonts">
+				</select>
+			</label>
+			<label>
+				Fonts
+				<select class="fontset">
+					<option value="installed">Installed Fonts</option>
+					<option value="google">Google Fonts</option>
+				</select>
+			</label>
+			<label class="center col-span-2">
+				<input class="rounded" type="checkbox" checked>
+				<label>Rounded Cursor</label>
+			</label>
+			<label class="col-span-2">
+				Text alignment
+				<select class="text-align">
+					<option value="left">left</option>
+					<option value="right">right</option>
+					<option value="center">center</option>
+					<option value="justify">justify</option>
+				</select>
+			</label>
+			<h2 class="col-span-full">Time</h2>
+			<label class="col-span-2">
+				Time Mode
+				<select class="time-mode">
+					<option value="countdown">Countdown</option>
+					<option value="timed">Timed</option>
+				</select>
+			</label>
+			<label class="col-span-2">
+				Seconds
+				<input class="testlen inp">
+			</label>
+			<h2 class="col-span-full">Text Generation</h2>
+			<label class="center col-span-2">
+				<input class="allupper" type="checkbox">
+				All Uppercase
+			</label>
+			<label class="center col-span-2">
+				<input class="firstupper" type="checkbox">
+				First Char Uppercase
+			</label>
+			<label class="center col-span-2">
+				<input class="randupper" type="checkbox">
+				Random Char Uppercase
+			</label>
+			<label class="col-span-full">Language</label>
+			<select class="lang col-span-full">
+				<option value="cn">Chinese</option>
+				<option value="cz">Czech</option>
+				<option value="de">German</option>
+				<option value="dk">Danish</option>
+				<option value="en">English</option>
+				<option value="ep">Esperanto</option>
+				<option value="es">Spanish</option>
+				<option value="fr">French</option>
+				<option value="hr">Croatian</option>
+				<option value="in">Hindi</option>
+				<option value="it">Italian</option>
+				<option value="jp">Japanese</option>
+				<option value="kr">Korean</option>
+				<option value="nl">Dutch</option>
+				<option value="pt">Portuguese</option>
+				<option value="si">Slovene</option>
+				<option value="tp">Toki Pona</option>
+			</select>
+			<label class="col-span-2">
+				Type out file
+				<label class="fileupload-btn">
+					Choose File
+					<input type="file" hidden class="file">
+				</label>
+			</label>
+			<label class="col-span-2">
+				Words
+				<input class="words inp" placeholder="words">
+			</label>
+			<label class="col-span-2">
+				Provide a wordlist
+				<label class="fileupload-btn">
+					Choose File
+					<input type="file" hidden class="wordlist">
+				</label>
+			</label>
+			<label class="col-span-2">
+				Letter Spacing
+				<input class="letter-spacing inp" type="range" min="0" max="4" step="0.1">
+			</label>
+			<label class="col-span-2">
+				Line Height
+				<input class="line-height inp" type="range" min="0" max="20" step="0.1">
+			</label>
+			<h2 class="col-span-full">Keybindings</h2>
+			<label class="col-span-2">
+				Leader Key
+				<input class="leader inp">
+			</label>
+			<label class="col-span-2">
+				Reset Key
+				<input class="reset inp">
+			</label>
+			<button class="resets btn col-span-full">Reset Settings</button>
+		</div>
+	</section>
+	<section>
+	</section>
+	<div hidden class="toggle-lines">
+		<button class="icon:x-circle close-lines"></button>
+		<button class="left"></button>
+		<button class="right"></button>
+		<button class="top"></button>
+		<button class="bottom"></button>
+	</div>
+	<nav class="icons">
+		<button title="Open s" class="s icon:cog"></button>
+		<button title="Adjust Margins" class="lines icon:frame"></button>
+	</nav>
+	<div class="themes-container">
+	</div>
+</body>
+
+</html>
